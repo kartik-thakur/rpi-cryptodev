@@ -4,6 +4,8 @@
 #include <linux/miscdevice.h>
 #include <linux/fs.h>
 #include <linux/crypto.h>
+#include <linux/scatterlist.h>
+#include <crypto/internal/skcipher.h>
 
 #include "rpi-cryptodev.h"
 
@@ -21,8 +23,19 @@ static long rpi_cryptodev_aes(__user struct aes_req *arg)
 {
 	long ret = 0L;
 	struct aes_req req;
-	u8 *key, *iv = NULL, *text;
-	//u32 copy_size;
+	u8 *key, *iv = NULL;
+	u64 copy_size;
+	void *inbuf,  *outbuf;
+	struct scatterlist sg_in, sg_out;
+	char alg[5][9] = {
+				"aes(ecb)",
+				"aes(cbc)",
+				"aes(xts)",
+				"aes(ofb)",
+				"aes(ctr)"
+			 };
+	struct crypto_skcipher *tfm;
+	struct skcipher_request *sk_req;
 
 	if (copy_from_user(&req, arg, sizeof(req))) {
 		ret = -EINVAL;
@@ -36,17 +49,42 @@ static long rpi_cryptodev_aes(__user struct aes_req *arg)
 		goto aes_out_ret;
 	}
 
-	if (req.iv && (req.iv_size > AES_MAX_IVSIZE)) {
+	if (req.iv && req.iv_size && (req.iv_size > AES_MAX_IVSIZE)) {
 		ret = -EINVAL;
 		pr_err("rpi-cryptodev: aes: invalid ivlen\n");
 		goto aes_out_ret;
+	}
+
+	if (req.op > AES_CTR) {
+		ret = -EINVAL;
+		pr_err("rpi-cryptodev: aes: invalid operation\n");
+		goto aes_out_ret;
+	}
+
+	/**
+	 * For performance improvements @mask can be changed to
+	 * CRYPTO_ALG_TYPE_ABLKCIPHER | CRYPTO_ALG_ASYNC
+	 * if req.op is not AES_CBC.
+	 */
+	tfm = crypto_alloc_skcipher(alg[req.op], 0, 0);
+	if(IS_ERR(tfm)) {
+		ret = PTR_ERR(tfm);
+		pr_err("rpi-cryptodev: aes: error allocating tfm\n");
+		goto aes_out_ret;
+	}
+
+	sk_req = skcipher_request_alloc(tfm, GFP_KERNEL);
+	if(!sk_req) {
+		ret = -ENOMEM;
+		pr_err("rpi-cryptodev: aes: error allocating memory\n");
+		goto aes_out_tfm;
 	}
 
 	key = kmalloc(req.key_size, GFP_KERNEL);
 	if (!key) {
 		ret = -ENOMEM;
 		pr_err("rpi-cryptodev: aes: error allocating memory\n");
-		goto aes_out_ret;
+		goto aes_out_sk_req;
 	}
 
 	if (copy_from_user(key, req.key, req.key_size)) {
@@ -72,13 +110,51 @@ static long rpi_cryptodev_aes(__user struct aes_req *arg)
 		}
 	}
 
-	/*processing request in chunks of PAGE_SIZE*/
+	inbuf = (void *)__get_free_page(GFP_KERNEL);
+	if (!inbuf) {
+		ret = -ENOMEM;
+		pr_err("rpi-cryptodev: aes: error allocating memory\n");
+		goto aes_out_iv;
+	}
 
+	outbuf = (void *)__get_free_page(GFP_KERNEL);
+	if (!outbuf) {
+		ret = -ENOMEM;
+		pr_err("rpi-cryptodev: aes: error allocating memory\n");
+		goto aes_out_inbuf;
+	}
+
+	/*processing request in chunks of PAGE_SIZE*/
+	while(req.text_size) {
+		copy_size = req.text_size < PAGE_SIZE ?
+			    req.text_size : PAGE_SIZE;
+
+		if (copy_from_user(inbuf, req.text, copy_size)) {
+			ret = -EINVAL;
+			pr_err("rpi-cryptodev: aes: error copying text");
+			goto aes_out_outbuf;
+		}
+
+		sg_init_one(&sg_in, inbuf, copy_size);
+		sg_init_one(&sg_out, outbuf, copy_size);
+
+		req.text += copy_size;
+		req.text_size -= copy_size;
+	}
+
+aes_out_outbuf:
+	free_page((unsigned long)outbuf);
+aes_out_inbuf:
+	free_page((unsigned long)inbuf);
 aes_out_iv:
 	if (iv)
 		kfree(iv);
 aes_out_key:
 	kfree(key);
+aes_out_sk_req:
+	skcipher_request_free(sk_req);
+aes_out_tfm:
+	crypto_free_skcipher(tfm);
 aes_out_ret:
 	return ret;
 }
