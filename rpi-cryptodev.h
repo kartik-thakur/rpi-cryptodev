@@ -48,6 +48,7 @@ struct aes_req {
 	__u8		iv_size;
 	__user __u8	*text;
 	__u64		text_size;
+	__user __u8	*out;
 };
 #define RPI_CRYPTO_AES _IOWR(MAGIC, RPI_CRYPTO_AES_NUM, struct aes_req)
 
