@@ -200,4 +200,4 @@ module_init(rpi_cryptodev_init);
 module_exit(rpi_cryptodev_exit);
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Kartik <kartik.thakur@hotmail.com">);
+MODULE_AUTHOR("Kartik <kartik.thakur@hotmail.com>");
