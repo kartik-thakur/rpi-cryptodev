@@ -41,7 +41,7 @@ enum rsa_ops {
  */
 struct aes_req {
 	enum aes_ops	op;
-	bool		encrypt;
+	unsigned	encrypt:1;
 	__user __u8	*key;
 	__u8		key_size;
 	__user __u8	*iv;
